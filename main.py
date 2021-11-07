@@ -4,6 +4,15 @@ import math
 from typing import List, OrderedDict
 from tdigest import TDigest
 import uvicorn 
+import psycopg2
+from config import db_config
+
+db_connection = psycopg2.connect(host=db_config['host'],
+    user=db_config['user'],        
+    password=db_config['passwd'],  
+    dbname=db_config['db_name'])     
+
+db_cur = db_connection.cursor()   
 
 app = FastAPI()
 order_db = {}
@@ -45,63 +54,82 @@ def index():
 @app.post('/order/place_order')
 async def place_order(new_order: _Order)->str:
     order_id = new_order.order_id
-    if order_id in order_db.keys():
+    order_existed = db_cur.execute("""select 1 from "orderTbl" where order_id =%s""" % order_id)
+    order_existed = db_cur.fetchall()
+
+    if order_existed:
         raise HTTPException(status_code=409, detail="Conflict, order_id already exist in database")
-    order_db[order_id] = new_order
+    else:
+        query = """
+            insert into "orderTbl" (order_id,item_list,customer) 
+            VALUES ('%s','%s','%s')
+        """ % (new_order.order_id , new_order.items_list, new_order.customer)
+        try:
+            db_cur.execute(query)
+            db_connection.commit()
+        except (Exception, psycopg2.DatabaseError) as error:
+            raise HTTPException(status_code=500, detail="fail to insert into database")
+
     return "Order placed"
 
 
 @app.get('/order/get_order')
 async def get_order(order_id: int)->dict:
-    if order_id not in order_order_db.keys():
-        raise HTTPException(status_code=404, detail="Cannot find order in order_db")
-    order = order_db[order_id]
-    return order.__dict__
+    query = """select order_id, item_list, customer from "orderTbl" where order_id = %s""" % order_id
+    print(query)
+    try:
+        db_cur.execute(query)
+        rv = db_cur.fetchall()
+    except (Exception, psycopg2.DatabaseError) as error:
+        raise HTTPException(status_code=500, detail="can't find that in database")
+    return rv if rv else "order not existed"
 
-@app.post('/order/place_order')
-async def place_order(new_order: _Order)->str:
-    order_id = new_order.order_id
-    if order_id in order_db.keys():
-        raise HTTPException(status_code=409, detail="Conflict, order_id already exist in database")
-    order_db[order_id] = new_order
-    return "Order placed"
-
-@app.get('/item/add_item')
+@app.post('/item/add_item')
 async def add_item(new_item: _Item)->dict:
     item_id = new_item.item_id
-    if item_id in order_db.keys():
+    db_cur.execute("""select 1 from "itemTbl" where item_id =%s""" % item_id)
+    item_existed = db_cur.fetchall()
+    if item_existed:
         raise HTTPException(status_code=409, detail="Conflict, item_id already exist in database")
-    item_db[item_id] = new_item
-    return "New Item Added"
+    else:
+        query = """
+            insert into "itemTbl" (item_id,name) 
+            VALUES ('%s','%s')
+        """ % (new_item.item_id , new_item.name)
+        try:
+            db_cur.execute(query)
+            db_connection.commit()
+        except (Exception, psycopg2.DatabaseError) as error:
+            raise HTTPException(status_code=500, detail="fail to insert into database")
+
+    return "Item Added"
 
 @app.get('/order/get_item')
 async def get_item(item_id: int)->dict:
-    if item_id not in item_db.keys():
-        raise HTTPException(status_code=404, detail="Cannot find item in item_db")
-    item = item_db[item_id]
-    return item.__dict__
+    query = """select item_id, name from "itemTbl" where item_id = '%s'""" % item_id
+    try:
+        db_cur.execute(query)
+        rv = db_cur.fetchall()
+    except (Exception, psycopg2.DatabaseError) as error:
+        raise HTTPException(status_code=500, detail="can't find that in database")
+    return rv if rv else "item not existed"
 
-@app.get('/item/update_item')
+
+@app.post('/item/update_item')
 async def update_item(new_item: _Item)->dict:
     item_id = new_item.item_id
-    if item_id not in order_db.keys():
-        raise HTTPException(status_code=409, detail="Conflict, Item order not found Please use add_item to insert into db")
-    item_db[item_id] = new_item
-    return "Item Updated"
+    db_cur.execute("""select 1 from "itemTbl" where item_id =%s""" % item_id)
+    item_existed = db_cur.fetchall()
 
-@app.get('/order_db')
-def get_order_db():
-    '''
-
-    '''
-    return [order_db[key] for key in order_db.keys()]
-
-@app.get('/item_db')
-def get_item_db():
-    '''
-
-    '''
-    return [item_db[key] for key in item_db.keys()]
+    if not item_existed:
+        raise HTTPException(status_code=409, detail="Conflict, item_id not exist in database")
+    query = """UPDATE "itemTbl" SET name = '%s' where item_id = '%s' """ % (new_item.name, new_item.item_id)
+    try:
+        db_cur.execute(query)
+        db_connection.commit()
+    except (Exception, psycopg2.DatabaseError) as error:
+        raise HTTPException(status_code=500, detail="fail to update in database")
+    return "item updated"
 
 if __name__ == '__main__':
 	uvicorn.run(app, host="127.0.0.1", port=8000)
